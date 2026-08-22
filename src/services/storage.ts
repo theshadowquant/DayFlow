@@ -6,10 +6,10 @@ import {
   INITIAL_USERS, INITIAL_EMPLOYEES, INITIAL_ATTENDANCE, INITIAL_LEAVE_REQUESTS, 
   INITIAL_PAYROLLS, INITIAL_NOTIFICATIONS, INITIAL_ACTIVITY_LOGS, getTodayDateString 
 } from './mockData';
-import { db, isFirebaseConfigured, COLLECTIONS } from './firebase';
-import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
+import { db, isFirebaseConfigured, COLLECTIONS, DEFAULT_ORG_ID, getOrgCollectionPath } from './firebase';
+import { collection, onSnapshot, doc, setDoc, query, where } from 'firebase/firestore';
 
-export { getTodayDateString, isFirebaseConfigured };
+export { getTodayDateString, isFirebaseConfigured, DEFAULT_ORG_ID };
 
 const KEYS = {
   USERS: 'dayflow_users',
@@ -21,7 +21,8 @@ const KEYS = {
   ACTIVITY: 'dayflow_activity_logs',
 };
 
-const listeners: Array<() => void> = [];
+let listeners: Array<() => void> = [];
+let firestoreUnsubscribers: Array<() => void> = [];
 
 export const subscribeToDataChanges = (listener: () => void) => {
   listeners.push(listener);
@@ -35,55 +36,96 @@ const notifyListeners = () => {
   listeners.forEach(fn => fn());
 };
 
-// Real-time Firebase Firestore Listeners setup
+// Complete session cache reset & Firestore unsubscriber for Logout (Phase 9)
+export const clearSessionCache = () => {
+  firestoreUnsubscribers.forEach(unsub => unsub());
+  firestoreUnsubscribers = [];
+  listeners = [];
+  isFirestoreInitialized = false;
+  localStorage.removeItem('dayflow_active_user_id');
+};
+
 let isFirestoreInitialized = false;
 
-export const initStorage = () => {
+export const initStorage = (orgId: string = DEFAULT_ORG_ID, activeEmployeeId?: string, userRole?: string) => {
   if (isFirebaseConfigured && db && !isFirestoreInitialized) {
     isFirestoreInitialized = true;
     
-    // Subscribe to Firestore collections
-    onSnapshot(collection(db, COLLECTIONS.USERS), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as User);
+    // Clear old unsubscribers
+    firestoreUnsubscribers.forEach(unsub => unsub());
+    firestoreUnsubscribers = [];
+
+    const isHrOrAdmin = userRole === 'HR' || userRole === 'ADMIN';
+
+    // 1. Users Collection
+    const usersCol = collection(db, getOrgCollectionPath(orgId, COLLECTIONS.USERS));
+    const unsubUsers = onSnapshot(usersCol, (snapshot: any) => {
+      const data = snapshot.docs.map((d: any) => d.data() as User);
       if (data.length > 0) localStorage.setItem(KEYS.USERS, JSON.stringify(data));
       notifyListeners();
     });
+    firestoreUnsubscribers.push(unsubUsers);
 
-    onSnapshot(collection(db, COLLECTIONS.EMPLOYEES), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as Employee);
+    // 2. Employees Collection - HR gets org-scoped, Employee gets own record query (Phase 8)
+    const empCol = collection(db, getOrgCollectionPath(orgId, COLLECTIONS.EMPLOYEES));
+    const empQuery = (isHrOrAdmin || !activeEmployeeId) 
+      ? empCol 
+      : query(empCol, where('employeeId', '==', activeEmployeeId));
+
+    const unsubEmp = onSnapshot(empQuery, (snapshot: any) => {
+      const data = snapshot.docs.map((d: any) => d.data() as Employee);
       if (data.length > 0) localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(data));
       notifyListeners();
     });
+    firestoreUnsubscribers.push(unsubEmp);
 
-    onSnapshot(collection(db, COLLECTIONS.ATTENDANCE), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as AttendanceRecord);
+    // 3. Attendance Records - Scoped query
+    const attCol = collection(db, getOrgCollectionPath(orgId, COLLECTIONS.ATTENDANCE));
+    const attQuery = (isHrOrAdmin || !activeEmployeeId)
+      ? attCol
+      : query(attCol, where('employeeId', '==', activeEmployeeId));
+
+    const unsubAtt = onSnapshot(attQuery, (snapshot: any) => {
+      const data = snapshot.docs.map((d: any) => d.data() as AttendanceRecord);
       if (data.length > 0) localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify(data));
       notifyListeners();
     });
+    firestoreUnsubscribers.push(unsubAtt);
 
-    onSnapshot(collection(db, COLLECTIONS.LEAVE), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as LeaveRequest);
+    // 4. Leave Requests - Scoped query
+    const leaveCol = collection(db, getOrgCollectionPath(orgId, COLLECTIONS.LEAVE));
+    const leaveQuery = (isHrOrAdmin || !activeEmployeeId)
+      ? leaveCol
+      : query(leaveCol, where('employeeId', '==', activeEmployeeId));
+
+    const unsubLeave = onSnapshot(leaveQuery, (snapshot: any) => {
+      const data = snapshot.docs.map((d: any) => d.data() as LeaveRequest);
       if (data.length > 0) localStorage.setItem(KEYS.LEAVE, JSON.stringify(data));
       notifyListeners();
     });
+    firestoreUnsubscribers.push(unsubLeave);
 
-    onSnapshot(collection(db, COLLECTIONS.PAYROLL), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as EmployeePayroll);
+    // 5. Payrolls - Scoped query (Phase 8 & 14 protection)
+    const payCol = collection(db, getOrgCollectionPath(orgId, COLLECTIONS.PAYROLL));
+    const payQuery = (isHrOrAdmin || !activeEmployeeId)
+      ? payCol
+      : query(payCol, where('employeeId', '==', activeEmployeeId));
+
+    const unsubPay = onSnapshot(payQuery, (snapshot: any) => {
+      const data = snapshot.docs.map((d: any) => d.data() as EmployeePayroll);
       if (data.length > 0) localStorage.setItem(KEYS.PAYROLL, JSON.stringify(data));
       notifyListeners();
     });
+    firestoreUnsubscribers.push(unsubPay);
 
-    onSnapshot(collection(db, COLLECTIONS.NOTIFICATIONS), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as Notification);
-      if (data.length > 0) localStorage.setItem(KEYS.NOTIFICATIONS, JSON.stringify(data));
-      notifyListeners();
-    });
-
-    onSnapshot(collection(db, COLLECTIONS.ACTIVITY), (snapshot: any) => {
-      const data = snapshot.docs.map((doc: any) => doc.data() as ActivityLog);
+    // 6. Audit Logs - Immutable
+    const auditCol = collection(db, getOrgCollectionPath(orgId, COLLECTIONS.ACTIVITY));
+    const unsubAudit = onSnapshot(auditCol, (snapshot: any) => {
+      const data = snapshot.docs.map((d: any) => d.data() as ActivityLog);
       if (data.length > 0) localStorage.setItem(KEYS.ACTIVITY, JSON.stringify(data));
       notifyListeners();
     });
+    firestoreUnsubscribers.push(unsubAudit);
   }
 
   // LocalStorage Fallback Initialization
@@ -110,7 +152,7 @@ export const initStorage = () => {
   }
 };
 
-export const resetToSeedData = async () => {
+export const resetToSeedData = async (orgId: string = DEFAULT_ORG_ID) => {
   localStorage.setItem(KEYS.USERS, JSON.stringify(INITIAL_USERS));
   localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(INITIAL_EMPLOYEES));
   localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify(INITIAL_ATTENDANCE));
@@ -119,16 +161,35 @@ export const resetToSeedData = async () => {
   localStorage.setItem(KEYS.NOTIFICATIONS, JSON.stringify(INITIAL_NOTIFICATIONS));
   localStorage.setItem(KEYS.ACTIVITY, JSON.stringify(INITIAL_ACTIVITY_LOGS));
 
-  // Sync seed data to Firestore if configured
+  // Sync seed data to multi-tenant Firestore structure if configured
   if (isFirebaseConfigured && db) {
     try {
-      for (const u of INITIAL_USERS) await setDoc(doc(db, COLLECTIONS.USERS, u.id), u);
-      for (const e of INITIAL_EMPLOYEES) await setDoc(doc(db, COLLECTIONS.EMPLOYEES, e.id), e);
-      for (const a of INITIAL_ATTENDANCE) await setDoc(doc(db, COLLECTIONS.ATTENDANCE, a.id), a);
-      for (const l of INITIAL_LEAVE_REQUESTS) await setDoc(doc(db, COLLECTIONS.LEAVE, l.id), l);
-      for (const p of INITIAL_PAYROLLS) await setDoc(doc(db, COLLECTIONS.PAYROLL, p.id), p);
-      for (const n of INITIAL_NOTIFICATIONS) await setDoc(doc(db, COLLECTIONS.NOTIFICATIONS, n.id), n);
-      for (const act of INITIAL_ACTIVITY_LOGS) await setDoc(doc(db, COLLECTIONS.ACTIVITY, act.id), act);
+      for (const u of INITIAL_USERS) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.USERS)}/${u.id}`), { ...u, organizationId: orgId });
+      }
+      for (const e of INITIAL_EMPLOYEES) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.EMPLOYEES)}/${e.id}`), { ...e, organizationId: orgId });
+        // Store sensitive compensation in isolated subcollection (Phase 5)
+        const pay = INITIAL_PAYROLLS.find(p => p.employeeId === e.employeeId);
+        if (pay) {
+          await setDoc(doc(db, `organizations/${orgId}/employees/${e.employeeId}/private/compensation`), pay.salaryStructure);
+        }
+      }
+      for (const a of INITIAL_ATTENDANCE) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.ATTENDANCE)}/${a.id}`), { ...a, organizationId: orgId });
+      }
+      for (const l of INITIAL_LEAVE_REQUESTS) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.LEAVE)}/${l.id}`), { ...l, organizationId: orgId });
+      }
+      for (const p of INITIAL_PAYROLLS) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.PAYROLL)}/${p.id}`), { ...p, organizationId: orgId });
+      }
+      for (const n of INITIAL_NOTIFICATIONS) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.NOTIFICATIONS)}/${n.id}`), { ...n, organizationId: orgId });
+      }
+      for (const act of INITIAL_ACTIVITY_LOGS) {
+        await setDoc(doc(db, `${getOrgCollectionPath(orgId, COLLECTIONS.ACTIVITY)}/${act.id}`), { ...act, organizationId: orgId });
+      }
     } catch (err) {
       console.error('Error syncing seed data to Firestore:', err);
     }
@@ -137,7 +198,7 @@ export const resetToSeedData = async () => {
   notifyListeners();
 };
 
-// Generic Helpers
+// Generic Local Reader Helpers
 const getItem = <T>(key: string): T[] => {
   initStorage();
   try {
@@ -154,11 +215,14 @@ const setItem = <T>(key: string, data: T[]) => {
   notifyListeners();
 };
 
-// Sync item to Firestore asynchronously
-const syncDocToFirestore = async (colName: string, docId: string, itemData: any) => {
+// Sync item to Multi-Tenant Firestore
+const syncDocToFirestore = async (colName: string, docId: string, itemData: any, orgId: string = DEFAULT_ORG_ID) => {
   if (isFirebaseConfigured && db) {
     try {
-      await setDoc(doc(db, colName, docId), itemData);
+      await setDoc(doc(db, `${getOrgCollectionPath(orgId, colName)}/${docId}`), {
+        ...itemData,
+        organizationId: orgId,
+      });
     } catch (e) {
       console.error(`Error syncing doc ${docId} to ${colName}:`, e);
     }
@@ -185,8 +249,8 @@ export const getTodayAttendanceForEmployee = (employeeId: string): AttendanceRec
   return records.find(r => r.employeeId === employeeId && r.date === today);
 };
 
-// Activity logging helper
-export const addActivityLog = (actorId: string, actorName: string, action: string, entity: string, details: string) => {
+// Immutable Audit Logging (Phase 12)
+export const addActivityLog = (actorId: string, actorName: string, action: string, entity: string, details: string, orgId: string = DEFAULT_ORG_ID) => {
   const logs = getActivityLogs();
   const newLog: ActivityLog = {
     id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -198,7 +262,7 @@ export const addActivityLog = (actorId: string, actorName: string, action: strin
     timestamp: new Date().toISOString(),
   };
   setItem(KEYS.ACTIVITY, [newLog, ...logs]);
-  syncDocToFirestore(COLLECTIONS.ACTIVITY, newLog.id, newLog);
+  syncDocToFirestore(COLLECTIONS.ACTIVITY, newLog.id, newLog, orgId);
 };
 
 // Notification helper
@@ -207,7 +271,8 @@ export const addNotification = (
   type: Notification['type'],
   title: string,
   message: string,
-  targetTab?: string
+  targetTab?: string,
+  orgId: string = DEFAULT_ORG_ID
 ) => {
   const notifs = getNotifications();
   const newNotif: Notification = {
@@ -221,15 +286,15 @@ export const addNotification = (
     targetTab,
   };
   setItem(KEYS.NOTIFICATIONS, [newNotif, ...notifs]);
-  syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, newNotif.id, newNotif);
+  syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, newNotif.id, newNotif, orgId);
 };
 
-export const markNotificationAsRead = (notifId: string) => {
+export const markNotificationAsRead = (notifId: string, orgId: string = DEFAULT_ORG_ID) => {
   const notifs = getNotifications();
   const updated = notifs.map(n => {
     if (n.id === notifId) {
       const readNotif = { ...n, read: true };
-      syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, notifId, readNotif);
+      syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, notifId, readNotif, orgId);
       return readNotif;
     }
     return n;
@@ -237,12 +302,12 @@ export const markNotificationAsRead = (notifId: string) => {
   setItem(KEYS.NOTIFICATIONS, updated);
 };
 
-export const markAllNotificationsAsRead = (recipientId: string) => {
+export const markAllNotificationsAsRead = (recipientId: string, orgId: string = DEFAULT_ORG_ID) => {
   const notifs = getNotifications();
   const updated = notifs.map(n => {
     if (n.recipientId === recipientId || n.recipientId === 'ALL') {
       const readNotif = { ...n, read: true };
-      syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, n.id, readNotif);
+      syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, n.id, readNotif, orgId);
       return readNotif;
     }
     return n;
@@ -251,11 +316,11 @@ export const markAllNotificationsAsRead = (recipientId: string) => {
 };
 
 // State Machine: Attendance Operations
-export const checkInEmployee = (employeeId: string, notes: string = ''): AttendanceRecord => {
+export const checkInEmployee = (employeeId: string, notes: string = '', orgId: string = DEFAULT_ORG_ID): AttendanceRecord => {
   const today = getTodayDateString();
   const records = getAttendance();
   const now = new Date();
-  const timeStr = now.toTimeString().substring(0, 5); // HH:mm
+  const timeStr = now.toTimeString().substring(0, 5);
   const isLate = now.getHours() > 9 || (now.getHours() === 9 && now.getMinutes() > 30);
 
   const existingIndex = records.findIndex(r => r.employeeId === employeeId && r.date === today);
@@ -289,12 +354,12 @@ export const checkInEmployee = (employeeId: string, notes: string = ''): Attenda
   }
 
   setItem(KEYS.ATTENDANCE, records);
-  syncDocToFirestore(COLLECTIONS.ATTENDANCE, updatedRecord.id, updatedRecord);
-  addActivityLog(employeeId, empName, 'CHECK_IN', 'Attendance', `Checked in at ${timeStr}`);
+  syncDocToFirestore(COLLECTIONS.ATTENDANCE, updatedRecord.id, updatedRecord, orgId);
+  addActivityLog(employeeId, empName, 'CHECK_IN', 'Attendance', `Checked in at ${timeStr}`, orgId);
   return updatedRecord;
 };
 
-export const checkOutEmployee = (employeeId: string, notes: string = ''): AttendanceRecord => {
+export const checkOutEmployee = (employeeId: string, notes: string = '', orgId: string = DEFAULT_ORG_ID): AttendanceRecord => {
   const today = getTodayDateString();
   const records = getAttendance();
   const now = new Date();
@@ -326,18 +391,19 @@ export const checkOutEmployee = (employeeId: string, notes: string = ''): Attend
 
   records[existingIndex] = updatedRecord;
   setItem(KEYS.ATTENDANCE, records);
-  syncDocToFirestore(COLLECTIONS.ATTENDANCE, updatedRecord.id, updatedRecord);
-  addActivityLog(employeeId, empName, 'CHECK_OUT', 'Attendance', `Checked out at ${timeStr} (${Math.round(durationMinutes / 60 * 10) / 10} hrs)`);
+  syncDocToFirestore(COLLECTIONS.ATTENDANCE, updatedRecord.id, updatedRecord, orgId);
+  addActivityLog(employeeId, empName, 'CHECK_OUT', 'Attendance', `Checked out at ${timeStr} (${Math.round(durationMinutes / 60 * 10) / 10} hrs)`, orgId);
   return updatedRecord;
 };
 
-// Leave Request Workflow Engine
+// Leave Request Workflow Engine & Transition Validation (Phase 7 & 12)
 export const submitLeaveRequest = (
   employeeId: string,
   leaveType: LeaveRequest['leaveType'],
   startDate: string,
   endDate: string,
-  remarks: string
+  remarks: string,
+  orgId: string = DEFAULT_ORG_ID
 ): LeaveRequest => {
   const employee = getEmployeeById(employeeId);
   if (!employee) throw new Error('Employee not found');
@@ -357,21 +423,22 @@ export const submitLeaveRequest = (
     endDate,
     durationDays,
     remarks,
-    status: 'Pending',
+    status: 'Pending', // Enforce Pending status on creation (Phase 7)
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
   const requests = getLeaveRequests();
   setItem(KEYS.LEAVE, [newRequest, ...requests]);
-  syncDocToFirestore(COLLECTIONS.LEAVE, newRequest.id, newRequest);
+  syncDocToFirestore(COLLECTIONS.LEAVE, newRequest.id, newRequest, orgId);
 
   addNotification(
     'ALL',
     'LEAVE_SUBMITTED',
     'New Leave Approval Pending',
     `${newRequest.employeeName} submitted a ${leaveType} leave request for ${durationDays} day(s).`,
-    'approvals'
+    'approvals',
+    orgId
   );
 
   addActivityLog(
@@ -379,7 +446,8 @@ export const submitLeaveRequest = (
     newRequest.employeeName,
     'LEAVE_SUBMITTED',
     'Leave Request',
-    `Applied for ${durationDays} day(s) of ${leaveType} leave`
+    `Applied for ${durationDays} day(s) of ${leaveType} leave`,
+    orgId
   );
 
   return newRequest;
@@ -388,13 +456,18 @@ export const submitLeaveRequest = (
 export const approveLeaveRequest = (
   requestId: string,
   reviewerId: string,
-  comment: string = ''
+  comment: string = '',
+  orgId: string = DEFAULT_ORG_ID
 ): LeaveRequest => {
   const requests = getLeaveRequests();
   const reqIndex = requests.findIndex(r => r.id === requestId);
   if (reqIndex === -1) throw new Error('Leave request not found');
 
   const req = requests[reqIndex];
+  if (req.status !== 'Pending') {
+    throw new Error('Only Pending leave requests can be approved.');
+  }
+
   const reviewer = getEmployeeById(reviewerId);
   const reviewerName = reviewer ? `${reviewer.firstName} ${reviewer.lastName}` : 'HR Administrator';
 
@@ -409,26 +482,23 @@ export const approveLeaveRequest = (
 
   requests[reqIndex] = updatedReq;
   setItem(KEYS.LEAVE, requests);
-  syncDocToFirestore(COLLECTIONS.LEAVE, updatedReq.id, updatedReq);
+  syncDocToFirestore(COLLECTIONS.LEAVE, updatedReq.id, updatedReq, orgId);
 
-  // 1. Transactional update: Adjust employee leave balances
+  // Adjust leave balance
   const employees = getEmployees();
   const empIndex = employees.findIndex(e => e.employeeId === req.employeeId);
   if (empIndex > -1) {
     const emp = employees[empIndex];
-    if (req.leaveType === 'Paid') {
-      emp.leaveBalance.paidUsed += req.durationDays;
-    } else if (req.leaveType === 'Sick') {
-      emp.leaveBalance.sickUsed += req.durationDays;
-    } else {
-      emp.leaveBalance.unpaidUsed += req.durationDays;
-    }
+    if (req.leaveType === 'Paid') emp.leaveBalance.paidUsed += req.durationDays;
+    else if (req.leaveType === 'Sick') emp.leaveBalance.sickUsed += req.durationDays;
+    else emp.leaveBalance.unpaidUsed += req.durationDays;
+    
     employees[empIndex] = emp;
     setItem(KEYS.EMPLOYEES, employees);
-    syncDocToFirestore(COLLECTIONS.EMPLOYEES, emp.id, emp);
+    syncDocToFirestore(COLLECTIONS.EMPLOYEES, emp.id, emp, orgId);
   }
 
-  // 2. Transactional update: Create/Update Attendance records as LEAVE for date range
+  // Update attendance entries for date range
   const attendanceRecords = getAttendance();
   const startDate = new Date(req.startDate);
   const endDate = new Date(req.endDate);
@@ -439,46 +509,18 @@ export const approveLeaveRequest = (
     
     let attRecord: AttendanceRecord;
     if (existingIndex > -1) {
-      attRecord = {
-        ...attendanceRecords[existingIndex],
-        status: 'LEAVE',
-        notes: `Approved ${req.leaveType} Leave`,
-      };
+      attRecord = { ...attendanceRecords[existingIndex], status: 'LEAVE', notes: `Approved ${req.leaveType} Leave` };
       attendanceRecords[existingIndex] = attRecord;
     } else {
-      attRecord = {
-        id: `att-lvr-${Date.now()}-${dStr}`,
-        employeeId: req.employeeId,
-        date: dStr,
-        checkIn: null,
-        checkOut: null,
-        durationMinutes: 0,
-        status: 'LEAVE',
-        notes: `Approved ${req.leaveType} Leave`,
-      };
+      attRecord = { id: `att-lvr-${Date.now()}-${dStr}`, employeeId: req.employeeId, date: dStr, checkIn: null, checkOut: null, durationMinutes: 0, status: 'LEAVE', notes: `Approved ${req.leaveType} Leave` };
       attendanceRecords.push(attRecord);
     }
-    syncDocToFirestore(COLLECTIONS.ATTENDANCE, attRecord.id, attRecord);
+    syncDocToFirestore(COLLECTIONS.ATTENDANCE, attRecord.id, attRecord, orgId);
   }
   setItem(KEYS.ATTENDANCE, attendanceRecords);
 
-  // 3. Emit notification to employee
-  addNotification(
-    req.employeeId,
-    'LEAVE_APPROVED',
-    'Leave Request Approved',
-    `Your ${req.leaveType} leave request for ${req.startDate} to ${req.endDate} was approved.`,
-    'leave'
-  );
-
-  // 4. Log activity
-  addActivityLog(
-    reviewerId,
-    reviewerName,
-    'LEAVE_APPROVED',
-    'Leave Request',
-    `Approved ${req.employeeName}'s leave request (#${req.id})`
-  );
+  addNotification(req.employeeId, 'LEAVE_APPROVED', 'Leave Request Approved', `Your ${req.leaveType} leave request for ${req.startDate} to ${req.endDate} was approved.`, 'leave', orgId);
+  addActivityLog(reviewerId, reviewerName, 'LEAVE_APPROVED', 'Leave Request', `Approved ${req.employeeName}'s leave request (#${req.id})`, orgId);
 
   return updatedReq;
 };
@@ -486,13 +528,18 @@ export const approveLeaveRequest = (
 export const rejectLeaveRequest = (
   requestId: string,
   reviewerId: string,
-  comment: string
+  comment: string,
+  orgId: string = DEFAULT_ORG_ID
 ): LeaveRequest => {
   const requests = getLeaveRequests();
   const reqIndex = requests.findIndex(r => r.id === requestId);
   if (reqIndex === -1) throw new Error('Leave request not found');
 
   const req = requests[reqIndex];
+  if (req.status !== 'Pending') {
+    throw new Error('Only Pending leave requests can be rejected.');
+  }
+
   const reviewer = getEmployeeById(reviewerId);
   const reviewerName = reviewer ? `${reviewer.firstName} ${reviewer.lastName}` : 'HR Administrator';
 
@@ -507,23 +554,10 @@ export const rejectLeaveRequest = (
 
   requests[reqIndex] = updatedReq;
   setItem(KEYS.LEAVE, requests);
-  syncDocToFirestore(COLLECTIONS.LEAVE, updatedReq.id, updatedReq);
+  syncDocToFirestore(COLLECTIONS.LEAVE, updatedReq.id, updatedReq, orgId);
 
-  addNotification(
-    req.employeeId,
-    'LEAVE_REJECTED',
-    'Leave Request Declined',
-    `Your ${req.leaveType} leave request was declined by ${reviewerName}. Reason: ${comment}`,
-    'leave'
-  );
-
-  addActivityLog(
-    reviewerId,
-    reviewerName,
-    'LEAVE_REJECTED',
-    'Leave Request',
-    `Declined ${req.employeeName}'s leave request (#${req.id})`
-  );
+  addNotification(req.employeeId, 'LEAVE_REJECTED', 'Leave Request Declined', `Your ${req.leaveType} leave request was declined by ${reviewerName}. Reason: ${comment}`, 'leave', orgId);
+  addActivityLog(reviewerId, reviewerName, 'LEAVE_REJECTED', 'Leave Request', `Declined ${req.employeeName}'s leave request (#${req.id})`, orgId);
 
   return updatedReq;
 };
@@ -533,7 +567,8 @@ export const updateSalaryStructure = (
   employeeId: string,
   newStructure: Omit<SalaryStructure, 'netSalary'>,
   actorId: string,
-  actorName: string
+  actorName: string,
+  orgId: string = DEFAULT_ORG_ID
 ): EmployeePayroll => {
   const payrolls = getPayrolls();
   const index = payrolls.findIndex(p => p.employeeId === employeeId);
@@ -572,23 +607,15 @@ export const updateSalaryStructure = (
   }
 
   setItem(KEYS.PAYROLL, payrolls);
-  syncDocToFirestore(COLLECTIONS.PAYROLL, updatedPayroll.id, updatedPayroll);
+  syncDocToFirestore(COLLECTIONS.PAYROLL, updatedPayroll.id, updatedPayroll, orgId);
 
-  addNotification(
-    employeeId,
-    'PAYROLL_UPDATE',
-    'Salary Structure Updated',
-    `Your compensation structure has been revised by HR. Net Salary: $${netSalary.toLocaleString()}`,
-    'payroll'
-  );
+  // Sync to isolated subcollection (Phase 5)
+  if (isFirebaseConfigured && db) {
+    setDoc(doc(db, `organizations/${orgId}/employees/${employeeId}/private/compensation`), fullStructure).catch(console.error);
+  }
 
-  addActivityLog(
-    actorId,
-    actorName,
-    'PAYROLL_UPDATE',
-    'Payroll',
-    `Updated salary structure for employee #${employeeId}`
-  );
+  addNotification(employeeId, 'PAYROLL_UPDATE', 'Salary Structure Updated', `Your compensation structure has been revised by HR. Net Salary: $${netSalary.toLocaleString()}`, 'payroll', orgId);
+  addActivityLog(actorId, actorName, 'PAYROLL_UPDATE', 'Payroll', `Updated salary structure for employee #${employeeId}`, orgId);
 
   return updatedPayroll;
 };
@@ -598,7 +625,8 @@ export const updateEmployeeProfile = (
   employeeId: string,
   updates: Partial<Employee>,
   actorId: string,
-  actorName: string
+  actorName: string,
+  orgId: string = DEFAULT_ORG_ID
 ): Employee => {
   const employees = getEmployees();
   const index = employees.findIndex(e => e.employeeId === employeeId || e.id === employeeId);
@@ -611,15 +639,9 @@ export const updateEmployeeProfile = (
 
   employees[index] = updatedEmployee;
   setItem(KEYS.EMPLOYEES, employees);
-  syncDocToFirestore(COLLECTIONS.EMPLOYEES, updatedEmployee.id, updatedEmployee);
+  syncDocToFirestore(COLLECTIONS.EMPLOYEES, updatedEmployee.id, updatedEmployee, orgId);
 
-  addActivityLog(
-    actorId,
-    actorName,
-    'PROFILE_UPDATE',
-    'Employee Profile',
-    `Updated profile info for ${updatedEmployee.firstName} ${updatedEmployee.lastName}`
-  );
+  addActivityLog(actorId, actorName, 'PROFILE_UPDATE', 'Employee Profile', `Updated profile info for ${updatedEmployee.firstName} ${updatedEmployee.lastName}`, orgId);
 
   return updatedEmployee;
 };
@@ -627,7 +649,8 @@ export const updateEmployeeProfile = (
 export const addEmployee = (
   empData: Omit<Employee, 'id' | 'leaveBalance' | 'documents'>,
   actorId: string,
-  actorName: string
+  actorName: string,
+  orgId: string = DEFAULT_ORG_ID
 ): Employee => {
   const employees = getEmployees();
   const users = getUsers();
@@ -655,8 +678,8 @@ export const addEmployee = (
   setItem(KEYS.EMPLOYEES, employees);
   setItem(KEYS.USERS, users);
 
-  syncDocToFirestore(COLLECTIONS.EMPLOYEES, newEmployee.id, newEmployee);
-  syncDocToFirestore(COLLECTIONS.USERS, newUser.id, newUser);
+  syncDocToFirestore(COLLECTIONS.EMPLOYEES, newEmployee.id, newEmployee, orgId);
+  syncDocToFirestore(COLLECTIONS.USERS, newUser.id, newUser, orgId);
 
   // Initialize payroll structure
   updateSalaryStructure(
@@ -671,16 +694,11 @@ export const addEmployee = (
       currency: 'USD',
     },
     actorId,
-    actorName
+    actorName,
+    orgId
   );
 
-  addActivityLog(
-    actorId,
-    actorName,
-    'ADD_EMPLOYEE',
-    'Employee Directory',
-    `Registered new employee ${newEmployee.firstName} ${newEmployee.lastName} (${newEmployee.employeeId})`
-  );
+  addActivityLog(actorId, actorName, 'ADD_EMPLOYEE', 'Employee Directory', `Registered new employee ${newEmployee.firstName} ${newEmployee.lastName} (${newEmployee.employeeId})`, orgId);
 
   return newEmployee;
 };

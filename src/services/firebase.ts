@@ -21,12 +21,18 @@ const app = isFirebaseConfigured
 
 export const db = app ? getFirestore(app) : null;
 
+export const DEFAULT_ORG_ID = 'org_dayflow';
+
+export const getOrgCollectionPath = (orgId: string = DEFAULT_ORG_ID, collectionName: string) => {
+  return `organizations/${orgId}/${collectionName}`;
+};
+
 export const COLLECTIONS = {
-  USERS: 'dayflow_users',
-  EMPLOYEES: 'dayflow_employees',
-  ATTENDANCE: 'dayflow_attendance',
-  LEAVE: 'dayflow_leave_requests',
-  PAYROLL: 'dayflow_payrolls',
-  NOTIFICATIONS: 'dayflow_notifications',
-  ACTIVITY: 'dayflow_activity_logs',
+  USERS: 'users',
+  EMPLOYEES: 'employees',
+  ATTENDANCE: 'attendance',
+  LEAVE: 'leave_requests',
+  PAYROLL: 'payrolls',
+  NOTIFICATIONS: 'notifications',
+  ACTIVITY: 'audit_logs',
 };

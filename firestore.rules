@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions pointing to organization-scoped membership path
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserDoc(orgId) {
+      return get(/databases/$(database)/documents/organizations/$(orgId)/users/$(request.auth.uid)).data;
+    }
+
+    function isOrgMember(orgId) {
+      return isSignedIn() && 
+        exists(/databases/$(database)/documents/organizations/$(orgId)/users/$(request.auth.uid));
+    }
+
+    function getUserRole(orgId) {
+      return getUserDoc(orgId).role;
+    }
+
+    function getUserEmployeeId(orgId) {
+      return getUserDoc(orgId).employeeId;
+    }
+
+    function isHR(orgId) {
+      return isOrgMember(orgId) && (getUserRole(orgId) == 'HR' || getUserRole(orgId) == 'ADMIN');
+    }
+
+    function isAdmin(orgId) {
+      return isOrgMember(orgId) && getUserRole(orgId) == 'ADMIN';
+    }
+
+    function isEmployeeOwner(orgId, employeeId) {
+      return isOrgMember(orgId) && getUserEmployeeId(orgId) == employeeId;
+    }
+
+    // Organization Scope
+    match /organizations/{orgId} {
+      allow read: if isOrgMember(orgId);
+
+      // User Membership Docs
+      match /users/{userId} {
+        allow read: if isOrgMember(orgId);
+        allow create: if isHR(orgId) || (request.auth.uid == userId);
+        allow update: if isHR(orgId) || (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'organizationId', 'employeeId']));
+      }
+
+      // Employees Profile & Private Subcollections
+      match /employees/{employeeId} {
+        allow read: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, employeeId));
+        allow create, update, delete: if isHR(orgId);
+
+        match /private/compensation {
+          allow read: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, employeeId));
+          allow write: if isHR(orgId);
+        }
+      }
+
+      // Attendance Records
+      match /attendance/{attendanceId} {
+        allow read: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, resource.data.employeeId));
+        allow create: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, request.resource.data.employeeId));
+        allow update: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, resource.data.employeeId));
+      }
+
+      // Leave Requests & State Transition Security
+      match /leave_requests/{requestId} {
+        allow read: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, resource.data.employeeId));
+        
+        // Employee can create leave requests with status Pending
+        allow create: if isOrgMember(orgId) && 
+          isEmployeeOwner(orgId, request.resource.data.employeeId) && 
+          request.resource.data.status == 'Pending';
+
+        // Only HR/Admin can transition leave request status from Pending to Approved or Rejected
+        allow update: if isOrgMember(orgId) && isHR(orgId) &&
+          (resource.data.status == 'Pending' && (request.resource.data.status == 'Approved' || request.resource.data.status == 'Rejected'));
+      }
+
+      // Payroll Records
+      match /payrolls/{payrollId} {
+        allow read: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, resource.data.employeeId));
+        allow write: if isHR(orgId);
+      }
+
+      // Notifications
+      match /notifications/{notifId} {
+        allow read: if isOrgMember(orgId) && (isHR(orgId) || resource.data.recipientId == 'ALL' || isEmployeeOwner(orgId, resource.data.recipientId));
+        allow create: if isOrgMember(orgId);
+        allow update: if isOrgMember(orgId) && (isHR(orgId) || isEmployeeOwner(orgId, resource.data.recipientId));
+      }
+
+      // Audit Logs (Immutable, Read-only for HR)
+      match /audit_logs/{auditId} {
+        allow read: if isHR(orgId);
+        allow create: if isOrgMember(orgId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 
 export const EmployeeDirectory: React.FC = () => {
-  const { currentEmployee, switchPersona } = useAuth();
+  const { currentEmployee, setInspectingEmployeeId } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>('ALL');
@@ -257,7 +257,7 @@ export const EmployeeDirectory: React.FC = () => {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            switchPersona(emp.employeeId);
+                            setInspectingEmployeeId(emp.employeeId);
                           }}
                           className="px-2.5 py-1 rounded-md bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-[11px] transition-colors"
                           title="Inspect as this employee"
@@ -317,7 +317,7 @@ export const EmployeeDirectory: React.FC = () => {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    switchPersona(emp.employeeId);
+                    setInspectingEmployeeId(emp.employeeId);
                   }}
                   className="font-bold text-purple-600 hover:underline"
                 >
@@ -526,7 +526,7 @@ export const EmployeeDirectory: React.FC = () => {
             <div className="pt-2">
               <button
                 onClick={() => {
-                  switchPersona(selectedEmployee.employeeId);
+                  setInspectingEmployeeId(selectedEmployee.employeeId);
                   setSelectedEmployee(null);
                 }}
                 className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-md shadow-purple-600/20"

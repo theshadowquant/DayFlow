@@ -1,18 +1,19 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import type { User, Employee, Role } from '../types';
-import { getUsers, getEmployees, subscribeToDataChanges, getEmployeeById } from '../services/storage';
+import { getUsers, getEmployees, subscribeToDataChanges, getEmployeeById, clearSessionCache, DEFAULT_ORG_ID } from '../services/storage';
 
 interface AuthContextType {
   currentUser: User | null;
   currentEmployee: Employee | null;
   role: Role;
+  organizationId: string;
   isAuthenticated: boolean;
+  inspectingEmployee: Employee | null; // Phase 10: HR Inspection Mode (HR remains HR_UID)
+  setInspectingEmployeeId: (empId: string | null) => void;
   login: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   register: (empId: string, email: string, pass: string, role: Role) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
-  switchRole: (role: Role) => void;
-  switchPersona: (employeeId: string) => void;
-  availablePersonas: Employee[];
+  availableEmployees: Employee[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -22,17 +23,19 @@ const ACTIVE_USER_KEY = 'dayflow_active_user_id';
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentEmployee, setCurrentEmployee] = useState<Employee | null>(null);
-  const [availablePersonas, setAvailablePersonas] = useState<Employee[]>([]);
+  const [inspectingEmployee, setInspectingEmployee] = useState<Employee | null>(null);
+  const [availableEmployees, setAvailableEmployees] = useState<Employee[]>([]);
+  const [organizationId] = useState<string>(DEFAULT_ORG_ID);
 
   const syncState = () => {
     const users = getUsers();
     const employees = getEmployees();
-    setAvailablePersonas(employees);
+    setAvailableEmployees(employees);
 
     const activeUserId = localStorage.getItem(ACTIVE_USER_KEY);
     let activeUser = users.find(u => u.id === activeUserId);
 
-    // Default auto-login to Alex Morgan (EMPLOYEE) if no active user session exists
+    // Default session login
     if (!activeUser && users.length > 0) {
       activeUser = users.find(u => u.employeeId === 'EMP-1002') || users[0];
       localStorage.setItem(ACTIVE_USER_KEY, activeUser.id);
@@ -54,6 +57,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
+  const setInspectingEmployeeId = (empId: string | null) => {
+    if (!empId) {
+      setInspectingEmployee(null);
+      return;
+    }
+    const emp = getEmployeeById(empId);
+    setInspectingEmployee(emp || null);
+  };
+
   const login = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
     if (!email || !pass) {
       return { success: false, error: 'Email and password are required fields.' };
@@ -74,6 +86,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentUser(user);
     const emp = getEmployeeById(user.employeeId);
     setCurrentEmployee(emp || null);
+    setInspectingEmployee(null);
     return { success: true };
   };
 
@@ -95,7 +108,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let emp = employees.find(e => e.employeeId.toUpperCase() === empId.trim().toUpperCase());
     
     if (!emp) {
-      // Create basic employee record if registering new employee ID
       const parts = email.split('@')[0].split('.');
       const firstName = parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : 'New';
       const lastName = parts[1] ? parts[1].charAt(0).toUpperCase() + parts[1].slice(1) : 'Employee';
@@ -108,8 +120,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: email.trim().toLowerCase(),
         phone: '+1 (555) 000-0000',
         role,
-        designation: role === 'ADMIN' ? 'HR Specialist' : 'Software Engineer',
-        department: role === 'ADMIN' ? 'Human Resources' : 'Engineering',
+        designation: role === 'ADMIN' || role === 'HR' ? 'HR Specialist' : 'Software Engineer',
+        department: role === 'ADMIN' || role === 'HR' ? 'Human Resources' : 'Engineering',
         joiningDate: new Date().toISOString().split('T')[0],
         status: 'Active',
         avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
@@ -138,51 +150,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem(ACTIVE_USER_KEY, newUser.id);
     setCurrentUser(newUser);
     setCurrentEmployee(emp);
+    setInspectingEmployee(null);
     return { success: true };
   };
 
+  // Phase 9: Clean Logout & Session Isolation
   const logout = () => {
-    localStorage.removeItem(ACTIVE_USER_KEY);
+    clearSessionCache();
     setCurrentUser(null);
     setCurrentEmployee(null);
-  };
-
-  const switchRole = (newRole: Role) => {
-    const users = getUsers();
-    const targetUser = users.find(u => u.role === newRole);
-    if (targetUser) {
-      localStorage.setItem(ACTIVE_USER_KEY, targetUser.id);
-      setCurrentUser(targetUser);
-      const emp = getEmployeeById(targetUser.employeeId);
-      setCurrentEmployee(emp || null);
-    }
-  };
-
-  const switchPersona = (employeeId: string) => {
-    const users = getUsers();
-    let targetUser = users.find(u => u.employeeId === employeeId);
-    
-    // If user record doesn't exist for employee, create a temporary user session
-    if (!targetUser) {
-      const emp = getEmployeeById(employeeId);
-      if (emp) {
-        targetUser = {
-          id: `usr-${emp.employeeId}`,
-          employeeId: emp.employeeId,
-          email: emp.email,
-          role: emp.role,
-          isVerified: true,
-          createdAt: new Date().toISOString(),
-        };
-      }
-    }
-
-    if (targetUser) {
-      localStorage.setItem(ACTIVE_USER_KEY, targetUser.id);
-      setCurrentUser(targetUser);
-      const emp = getEmployeeById(targetUser.employeeId);
-      setCurrentEmployee(emp || null);
-    }
+    setInspectingEmployee(null);
   };
 
   const role: Role = currentUser?.role || 'EMPLOYEE';
@@ -194,13 +171,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         currentEmployee,
         role,
+        organizationId,
         isAuthenticated,
+        inspectingEmployee,
+        setInspectingEmployeeId,
         login,
         register,
         logout,
-        switchRole,
-        switchPersona,
-        availablePersonas,
+        availableEmployees,
       }}
     >
       {children}
