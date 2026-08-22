@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { getActivityLogs, resetToSeedData, subscribeToDataChanges } from '../../services/storage';
+import { getActivityLogs, resetToSeedData, subscribeToDataChanges, isFirebaseConfigured } from '../../services/storage';
 import type { ActivityLog } from '../../types';
-import { RefreshCw, Activity, CheckCircle2, Clock } from 'lucide-react';
+import { RefreshCw, Activity, CheckCircle2, Clock, Cloud } from 'lucide-react';
 
 export const HRSettings: React.FC = () => {
   const [logs, setLogs] = useState<ActivityLog[]>([]);
@@ -17,9 +17,9 @@ export const HRSettings: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const handleResetData = () => {
+  const handleResetData = async () => {
     if (confirm('Are you sure you want to reset all Dayflow data back to default demo seed data?')) {
-      resetToSeedData();
+      await resetToSeedData();
       setResetSuccess(true);
       setTimeout(() => setResetSuccess(false), 3000);
     }
@@ -28,15 +28,27 @@ export const HRSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h3 className="text-xl font-bold text-slate-900">Administrative HR Controls & Audit Logs</h3>
-        <p className="text-xs text-slate-500">Configure organization policies and inspect system activity streams</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-xl font-bold text-slate-900">Administrative HR Controls & Audit Logs</h3>
+          <p className="text-xs text-slate-500">Configure organization policies and inspect system activity streams</p>
+        </div>
+
+        {/* Firebase Status Badge */}
+        <div className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center space-x-2 ${
+          isFirebaseConfigured 
+            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+            : 'bg-amber-50 text-amber-800 border-amber-200'
+        }`}>
+          <Cloud className="w-4 h-4" />
+          <span>{isFirebaseConfigured ? 'Firebase Firestore Connected' : 'Local Persistence (No Firebase Env)'}</span>
+        </div>
       </div>
 
       {resetSuccess && (
         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center space-x-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-          <span>System state reset to clean demo seed data successfully.</span>
+          <span>System state reset to clean demo seed data and synced successfully.</span>
         </div>
       )}
 

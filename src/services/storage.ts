@@ -6,8 +6,10 @@ import {
   INITIAL_USERS, INITIAL_EMPLOYEES, INITIAL_ATTENDANCE, INITIAL_LEAVE_REQUESTS, 
   INITIAL_PAYROLLS, INITIAL_NOTIFICATIONS, INITIAL_ACTIVITY_LOGS, getTodayDateString 
 } from './mockData';
+import { db, isFirebaseConfigured, COLLECTIONS } from './firebase';
+import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
 
-export { getTodayDateString };
+export { getTodayDateString, isFirebaseConfigured };
 
 const KEYS = {
   USERS: 'dayflow_users',
@@ -33,7 +35,58 @@ const notifyListeners = () => {
   listeners.forEach(fn => fn());
 };
 
+// Real-time Firebase Firestore Listeners setup
+let isFirestoreInitialized = false;
+
 export const initStorage = () => {
+  if (isFirebaseConfigured && db && !isFirestoreInitialized) {
+    isFirestoreInitialized = true;
+    
+    // Subscribe to Firestore collections
+    onSnapshot(collection(db, COLLECTIONS.USERS), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as User);
+      if (data.length > 0) localStorage.setItem(KEYS.USERS, JSON.stringify(data));
+      notifyListeners();
+    });
+
+    onSnapshot(collection(db, COLLECTIONS.EMPLOYEES), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as Employee);
+      if (data.length > 0) localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(data));
+      notifyListeners();
+    });
+
+    onSnapshot(collection(db, COLLECTIONS.ATTENDANCE), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as AttendanceRecord);
+      if (data.length > 0) localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify(data));
+      notifyListeners();
+    });
+
+    onSnapshot(collection(db, COLLECTIONS.LEAVE), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as LeaveRequest);
+      if (data.length > 0) localStorage.setItem(KEYS.LEAVE, JSON.stringify(data));
+      notifyListeners();
+    });
+
+    onSnapshot(collection(db, COLLECTIONS.PAYROLL), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as EmployeePayroll);
+      if (data.length > 0) localStorage.setItem(KEYS.PAYROLL, JSON.stringify(data));
+      notifyListeners();
+    });
+
+    onSnapshot(collection(db, COLLECTIONS.NOTIFICATIONS), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as Notification);
+      if (data.length > 0) localStorage.setItem(KEYS.NOTIFICATIONS, JSON.stringify(data));
+      notifyListeners();
+    });
+
+    onSnapshot(collection(db, COLLECTIONS.ACTIVITY), (snapshot: any) => {
+      const data = snapshot.docs.map((doc: any) => doc.data() as ActivityLog);
+      if (data.length > 0) localStorage.setItem(KEYS.ACTIVITY, JSON.stringify(data));
+      notifyListeners();
+    });
+  }
+
+  // LocalStorage Fallback Initialization
   if (!localStorage.getItem(KEYS.USERS)) {
     localStorage.setItem(KEYS.USERS, JSON.stringify(INITIAL_USERS));
   }
@@ -57,7 +110,7 @@ export const initStorage = () => {
   }
 };
 
-export const resetToSeedData = () => {
+export const resetToSeedData = async () => {
   localStorage.setItem(KEYS.USERS, JSON.stringify(INITIAL_USERS));
   localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(INITIAL_EMPLOYEES));
   localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify(INITIAL_ATTENDANCE));
@@ -65,6 +118,22 @@ export const resetToSeedData = () => {
   localStorage.setItem(KEYS.PAYROLL, JSON.stringify(INITIAL_PAYROLLS));
   localStorage.setItem(KEYS.NOTIFICATIONS, JSON.stringify(INITIAL_NOTIFICATIONS));
   localStorage.setItem(KEYS.ACTIVITY, JSON.stringify(INITIAL_ACTIVITY_LOGS));
+
+  // Sync seed data to Firestore if configured
+  if (isFirebaseConfigured && db) {
+    try {
+      for (const u of INITIAL_USERS) await setDoc(doc(db, COLLECTIONS.USERS, u.id), u);
+      for (const e of INITIAL_EMPLOYEES) await setDoc(doc(db, COLLECTIONS.EMPLOYEES, e.id), e);
+      for (const a of INITIAL_ATTENDANCE) await setDoc(doc(db, COLLECTIONS.ATTENDANCE, a.id), a);
+      for (const l of INITIAL_LEAVE_REQUESTS) await setDoc(doc(db, COLLECTIONS.LEAVE, l.id), l);
+      for (const p of INITIAL_PAYROLLS) await setDoc(doc(db, COLLECTIONS.PAYROLL, p.id), p);
+      for (const n of INITIAL_NOTIFICATIONS) await setDoc(doc(db, COLLECTIONS.NOTIFICATIONS, n.id), n);
+      for (const act of INITIAL_ACTIVITY_LOGS) await setDoc(doc(db, COLLECTIONS.ACTIVITY, act.id), act);
+    } catch (err) {
+      console.error('Error syncing seed data to Firestore:', err);
+    }
+  }
+
   notifyListeners();
 };
 
@@ -83,6 +152,17 @@ const getItem = <T>(key: string): T[] => {
 const setItem = <T>(key: string, data: T[]) => {
   localStorage.setItem(key, JSON.stringify(data));
   notifyListeners();
+};
+
+// Sync item to Firestore asynchronously
+const syncDocToFirestore = async (colName: string, docId: string, itemData: any) => {
+  if (isFirebaseConfigured && db) {
+    try {
+      await setDoc(doc(db, colName, docId), itemData);
+    } catch (e) {
+      console.error(`Error syncing doc ${docId} to ${colName}:`, e);
+    }
+  }
 };
 
 // Data Readers
@@ -118,6 +198,7 @@ export const addActivityLog = (actorId: string, actorName: string, action: strin
     timestamp: new Date().toISOString(),
   };
   setItem(KEYS.ACTIVITY, [newLog, ...logs]);
+  syncDocToFirestore(COLLECTIONS.ACTIVITY, newLog.id, newLog);
 };
 
 // Notification helper
@@ -140,19 +221,32 @@ export const addNotification = (
     targetTab,
   };
   setItem(KEYS.NOTIFICATIONS, [newNotif, ...notifs]);
+  syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, newNotif.id, newNotif);
 };
 
 export const markNotificationAsRead = (notifId: string) => {
   const notifs = getNotifications();
-  const updated = notifs.map(n => n.id === notifId ? { ...n, read: true } : n);
+  const updated = notifs.map(n => {
+    if (n.id === notifId) {
+      const readNotif = { ...n, read: true };
+      syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, notifId, readNotif);
+      return readNotif;
+    }
+    return n;
+  });
   setItem(KEYS.NOTIFICATIONS, updated);
 };
 
 export const markAllNotificationsAsRead = (recipientId: string) => {
   const notifs = getNotifications();
-  const updated = notifs.map(n => 
-    (n.recipientId === recipientId || n.recipientId === 'ALL') ? { ...n, read: true } : n
-  );
+  const updated = notifs.map(n => {
+    if (n.recipientId === recipientId || n.recipientId === 'ALL') {
+      const readNotif = { ...n, read: true };
+      syncDocToFirestore(COLLECTIONS.NOTIFICATIONS, n.id, readNotif);
+      return readNotif;
+    }
+    return n;
+  });
   setItem(KEYS.NOTIFICATIONS, updated);
 };
 
@@ -195,6 +289,7 @@ export const checkInEmployee = (employeeId: string, notes: string = ''): Attenda
   }
 
   setItem(KEYS.ATTENDANCE, records);
+  syncDocToFirestore(COLLECTIONS.ATTENDANCE, updatedRecord.id, updatedRecord);
   addActivityLog(employeeId, empName, 'CHECK_IN', 'Attendance', `Checked in at ${timeStr}`);
   return updatedRecord;
 };
@@ -215,7 +310,6 @@ export const checkOutEmployee = (employeeId: string, notes: string = ''): Attend
 
   const record = records[existingIndex];
   
-  // Calculate duration in minutes
   const [inH, inM] = record.checkIn!.split(':').map(Number);
   const [outH, outM] = timeStr.split(':').map(Number);
   const durationMinutes = Math.max(0, (outH * 60 + outM) - (inH * 60 + inM));
@@ -232,6 +326,7 @@ export const checkOutEmployee = (employeeId: string, notes: string = ''): Attend
 
   records[existingIndex] = updatedRecord;
   setItem(KEYS.ATTENDANCE, records);
+  syncDocToFirestore(COLLECTIONS.ATTENDANCE, updatedRecord.id, updatedRecord);
   addActivityLog(employeeId, empName, 'CHECK_OUT', 'Attendance', `Checked out at ${timeStr} (${Math.round(durationMinutes / 60 * 10) / 10} hrs)`);
   return updatedRecord;
 };
@@ -269,6 +364,7 @@ export const submitLeaveRequest = (
 
   const requests = getLeaveRequests();
   setItem(KEYS.LEAVE, [newRequest, ...requests]);
+  syncDocToFirestore(COLLECTIONS.LEAVE, newRequest.id, newRequest);
 
   addNotification(
     'ALL',
@@ -313,6 +409,7 @@ export const approveLeaveRequest = (
 
   requests[reqIndex] = updatedReq;
   setItem(KEYS.LEAVE, requests);
+  syncDocToFirestore(COLLECTIONS.LEAVE, updatedReq.id, updatedReq);
 
   // 1. Transactional update: Adjust employee leave balances
   const employees = getEmployees();
@@ -328,9 +425,10 @@ export const approveLeaveRequest = (
     }
     employees[empIndex] = emp;
     setItem(KEYS.EMPLOYEES, employees);
+    syncDocToFirestore(COLLECTIONS.EMPLOYEES, emp.id, emp);
   }
 
-  // 2. Transactional update: Create/Update Attendance records as LEAVE for the date range
+  // 2. Transactional update: Create/Update Attendance records as LEAVE for date range
   const attendanceRecords = getAttendance();
   const startDate = new Date(req.startDate);
   const endDate = new Date(req.endDate);
@@ -339,14 +437,16 @@ export const approveLeaveRequest = (
     const dStr = d.toISOString().split('T')[0];
     const existingIndex = attendanceRecords.findIndex(a => a.employeeId === req.employeeId && a.date === dStr);
     
+    let attRecord: AttendanceRecord;
     if (existingIndex > -1) {
-      attendanceRecords[existingIndex] = {
+      attRecord = {
         ...attendanceRecords[existingIndex],
         status: 'LEAVE',
         notes: `Approved ${req.leaveType} Leave`,
       };
+      attendanceRecords[existingIndex] = attRecord;
     } else {
-      attendanceRecords.push({
+      attRecord = {
         id: `att-lvr-${Date.now()}-${dStr}`,
         employeeId: req.employeeId,
         date: dStr,
@@ -355,8 +455,10 @@ export const approveLeaveRequest = (
         durationMinutes: 0,
         status: 'LEAVE',
         notes: `Approved ${req.leaveType} Leave`,
-      });
+      };
+      attendanceRecords.push(attRecord);
     }
+    syncDocToFirestore(COLLECTIONS.ATTENDANCE, attRecord.id, attRecord);
   }
   setItem(KEYS.ATTENDANCE, attendanceRecords);
 
@@ -405,6 +507,7 @@ export const rejectLeaveRequest = (
 
   requests[reqIndex] = updatedReq;
   setItem(KEYS.LEAVE, requests);
+  syncDocToFirestore(COLLECTIONS.LEAVE, updatedReq.id, updatedReq);
 
   addNotification(
     req.employeeId,
@@ -469,6 +572,7 @@ export const updateSalaryStructure = (
   }
 
   setItem(KEYS.PAYROLL, payrolls);
+  syncDocToFirestore(COLLECTIONS.PAYROLL, updatedPayroll.id, updatedPayroll);
 
   addNotification(
     employeeId,
@@ -507,6 +611,7 @@ export const updateEmployeeProfile = (
 
   employees[index] = updatedEmployee;
   setItem(KEYS.EMPLOYEES, employees);
+  syncDocToFirestore(COLLECTIONS.EMPLOYEES, updatedEmployee.id, updatedEmployee);
 
   addActivityLog(
     actorId,
@@ -549,6 +654,9 @@ export const addEmployee = (
 
   setItem(KEYS.EMPLOYEES, employees);
   setItem(KEYS.USERS, users);
+
+  syncDocToFirestore(COLLECTIONS.EMPLOYEES, newEmployee.id, newEmployee);
+  syncDocToFirestore(COLLECTIONS.USERS, newUser.id, newUser);
 
   // Initialize payroll structure
   updateSalaryStructure(
